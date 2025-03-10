@@ -1,0 +1,33 @@
+chmod +x src/agentos_sdk/robot_walk_control/scripts/start_stand.sh
+chmod +x src/agentos_sdk/robot_walk_control/scripts/start_walk.sh
+chmod +x src/agentos_sdk/robot_jump_control/scripts/start_jump.sh
+
+lsblk
+
+sudo mount /dev/sda1 /mnt
+
+cp -r /mnt/agent_ws/ .
+
+cp -r /mnt/example_ws/ .
+
+sudo umount /mnt
+
+ssh root@10.10.10.10
+
+sudo reboot
+
+
+# 新增机器人控制命令
+# 给新脚本添加执行权限
+chmod +x src/dev_robot_control_sdk/stand_up.sh
+chmod +x src/dev_robot_control_sdk/stop_robot.sh
+chmod +x src/dev_robot_control_sdk/walk_forward.sh
+
+# 使用交互式站立脚本（可以用Ctrl+C中断）
+./src/dev_robot_control_sdk/stand_up.sh
+
+# 使用前进行走脚本
+./src/dev_robot_control_sdk/walk_forward.sh
+
+# 使用停止脚本手动停止机器人
+./src/dev_robot_control_sdk/stop_robot.sh
