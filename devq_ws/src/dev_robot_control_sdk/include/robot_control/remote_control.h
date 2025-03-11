@@ -34,11 +34,19 @@ public:
     RosRemoteControl();
     virtual ~RosRemoteControl();
 
+    /**
+     * Initialize with robot data.
+     * @param robot_data Robot data pointer.
+     */
+    void initialize(RobotData *robot_data);
+
 protected:
     void on_set_mode_callback(const std_msgs::Int32MultiArray::ConstPtr &msg);
     void on_set_velocity_callback(const std_msgs::Float32MultiArray::ConstPtr &msg);
+    void on_set_joints_callback(const std_msgs::Float32MultiArray::ConstPtr &msg);
 
 protected:
     ros::NodeHandle node_;
     std::vector<ros::Subscriber> subscribers_;
+    RobotData *robot_data_ = nullptr;
 };

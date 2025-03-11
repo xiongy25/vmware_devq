@@ -6,6 +6,7 @@
 
 #include "robot_control/robot.h"
 #include "robot_control/remote_control.h"
+#include "robot_control/ros_state_publisher.h"
 #include "fsm/fsm_state.h"
 
 
@@ -94,6 +95,7 @@ protected:
     // Devices
     Robot *robot_ = nullptr;
     RemoteControl *remote_controller_ = nullptr;
+    RosStatePublisher *state_publisher_ = nullptr;
 
     // Running thread
     float dt_ = 0.005f;

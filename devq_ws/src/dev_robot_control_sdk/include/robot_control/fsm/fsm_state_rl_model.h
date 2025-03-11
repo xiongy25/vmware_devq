@@ -107,6 +107,14 @@ public:
     // Update robot command in the current state
     void run()
     {
+        // 检查模式是否为上位机远程RL控制
+        if (robot_data_->remote_command.mode[1] == 1) {
+            // 在上位机RL模式下，不进行本地推理，直接使用接收到的关节命令
+            // 注意：这种情况下，关节命令的kp、kd已经在RosRemoteControl::on_set_joints_callback中设置
+            return;
+        }
+        
+        // 以下是本地推理模式代码，保持不变
         // Do model inference every decimation
         if (iter_ % decimation_ == 0)
         {

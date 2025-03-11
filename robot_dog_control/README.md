@@ -7,6 +7,9 @@
 ```
 robot_dog_control/
 ├── README.md                 # 本文档
+├── rl_controller.py          # 强化学习控制器
+├── rl_model/                 # 强化学习模型文件夹
+│   └── policy_1.pt           # PyTorch模型文件
 ├── ros1_ws/                  # ROS工作空间
 │   └── src/
 │       └── robot_command_publisher/   # 命令发布包
@@ -27,6 +30,8 @@ robot_dog_control/
 - VMware虚拟机运行Ubuntu 20.04
 - ROS1 Noetic
 - 已安装std_msgs、roscpp等依赖包
+- Python 3.8+
+- PyTorch 1.8+
 
 ### 配置步骤
 
@@ -128,7 +133,16 @@ ping 10.10.10.10
      - 停止: data: [0.0, 0.0, 0.0]
      ```
 
-3. **命令执行流程**:
+3. **机器人状态和关节控制话题** (强化学习模式):
+   - 状态话题: `/robot_control/robot_state`
+     - 消息类型: `std_msgs/Float32MultiArray`
+     - 数据格式: [gyro_x, gyro_y, gyro_z, quat_w, quat_x, quat_y, quat_z, joint1_pos, joint1_vel, ...]
+   
+   - 关节控制话题: `/robot_control/set_joints`
+     - 消息类型: `std_msgs/Float32MultiArray`
+     - 数据格式: [joint1_pos, joint2_pos, ..., joint12_pos]
+
+4. **命令执行流程**:
    - 下位机启动ROS节点并订阅相关话题
    - 上位机通过发布命令到指定话题控制机器狗
    - 下位机接收到命令后执行相应动作
@@ -194,6 +208,100 @@ ping 10.10.10.10
 ```
 
 确保你选择的IP地址（如10.10.10.20）不与网络中其他设备冲突。你可以根据需要选择10.10.10.x网段中的任何未使用的地址（其中x为2-254之间的数字，避开已使用的IP如10.10.10.10）。
+
+## 强化学习模型迁移到上位机
+
+为了提高机器狗的控制性能，我们将强化学习模型从下位机迁移到了上位机运行。这种架构允许我们在上位机上运行更复杂、计算开销更大的控制算法，同时利用下位机处理低级别的硬件控制。
+
+### 架构说明
+
+![强化学习控制架构](https://mermaid.ink/img/pako:eNptkc9uwjAMxl8l8nlI5QFyQNqkHrZJ29C0w9QLappoaROlCYhR3n1OKRQYuTjf7_tjyx4BVZaAQ8GrhtXPtVAGQjPkPLsXdU3KTERGLOmktBIaCBNXkBIbCEZUP-YclLYwedezIxVXKzw7Xgmud0XoQAw5LdnW2o-Ufd9fEVvdUmaPl63dOZOt5Qqmjmw9Fx-ijOEzxCv1N_9lAOFwAe0eihvcO2Z-VnCDC0P5_9iMTVq0rWw5cJnLTu2ARwXzb_OPMkDOyYZLDsfKohNEXI0a1pJbfbGmF1Vd7_QW4K0VNbWybtQrvHdNweChbtFDHvFXwrsdKB1RDyVlSPuQUOy_0eEwPcWDFHBWh28zOSjSKDyIwsXOPIrhcZxM-_0-eYzjKRxVw0eXCm2F?type=png)
+
+**系统组成**:
+1. **上位机**:
+   - 运行PyTorch强化学习模型
+   - 通过ROS话题接收机器人状态数据
+   - 计算并发送关节位置命令
+   
+2. **下位机**:
+   - 发布机器人状态数据
+   - 接收关节控制命令
+   - 执行底层硬件控制
+
+### 下位机代码修改
+
+为了支持这种架构，我们对下位机代码进行了以下修改：
+
+1. **添加了状态发布功能**:
+   - 创建了`RosStatePublisher`类，用于发布机器狗状态数据
+   - 发布的数据包括基本线速度、角速度、姿态四元数和关节状态
+
+2. **修改了远程控制模块**:
+   - 在`RosRemoteControl`类中添加了关节命令订阅功能
+   - 添加了处理来自上位机的关节位置命令的回调函数
+
+3. **修改了强化学习状态机**:
+   - 在`FSMStateRLModel`中添加了对上位机控制模式的支持
+   - 当指定为上位机控制模式时，跳过本地模型推理
+
+### 上位机代码功能
+
+上位机控制程序(`rl_controller.py`)的主要功能：
+
+1. **加载和运行PyTorch模型**:
+   - 从文件加载预训练的强化学习模型
+   - 使用GPU（如果可用）加速模型推理
+
+2. **ROS通信**:
+   - 订阅下位机发布的机器人状态数据
+   - 发布计算得到的关节控制命令
+   - 发布模式和速度控制命令
+
+3. **演示功能**:
+   - 提供一个简单的演示序列，控制机器狗执行一系列动作
+   - 包括站立、前进、转向等基本动作
+
+### 使用方法
+
+#### 环境准备
+确保你的上位机安装了以下软件包：
+```bash
+sudo apt update
+sudo apt install python3-pip ros-noetic-ros-base
+pip3 install torch numpy
+```
+
+#### 运行强化学习控制器
+```bash
+# 设置ROS环境
+export ROS_MASTER_URI=http://10.10.10.10:11311
+export ROS_IP=10.10.10.20  # 替换为你的上位机IP
+
+# 运行控制器
+cd /home/ubuntu22/vmware_devq/robot_dog_control
+chmod +x rl_controller.py
+./rl_controller.py
+```
+
+#### 控制器工作流程
+1. 控制器启动后会先让机器狗站立
+2. 然后切换到强化学习模式(模式3)
+3. 执行一系列演示动作（前进、左转、右转）
+4. 最后回到站立模式
+
+### 配置和调整
+
+你可以根据需要修改`rl_controller.py`中的参数：
+
+- **模型路径**: 更改`model_path`变量指向你的自定义模型
+- **演示序列**: 修改`run_demo()`方法中的动作序列
+- **控制参数**: 调整速度、控制增益等参数
+
+### 故障排除
+
+- 如果模型加载失败，检查模型文件路径是否正确
+- 如果无法接收机器人状态数据，检查ROS连接和话题名称
+- 如果机器狗动作异常，可能需要调整控制参数或检查模型兼容性
 
 ## 故障排除
 

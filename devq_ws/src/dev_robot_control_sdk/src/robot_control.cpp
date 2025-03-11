@@ -19,6 +19,7 @@ RobotControl::RobotControl(const std::string &config_path)
 {
     remote_controller_ = new RosRemoteControl();
     robot_ = new Robot(config_path);
+    state_publisher_ = new RosStatePublisher(&data_);
 
     data_.config = YAML::LoadFile(config_path);
     dt_ = data_.config["dt"].as<float>();
@@ -43,6 +44,7 @@ RobotControl::~RobotControl()
 
     delete robot_;
     delete remote_controller_;
+    delete state_publisher_;
     delete fsm_.passive;
     delete fsm_.lie_down;
     delete fsm_.stand_up;
@@ -56,7 +58,21 @@ RobotControl::~RobotControl()
  */
 int RobotControl::initialize()
 {
-    return robot_->initialize();
+    int err = robot_->initialize();
+    if (err != 0) {
+        return err;
+    }
+    
+    // 初始化ROS状态发布器
+    ros::NodeHandle node("robot_control");
+    state_publisher_->initialize(node);
+    
+    // 初始化远程控制器，传入robot_data指针
+    if (RosRemoteControl* ros_remote = dynamic_cast<RosRemoteControl*>(remote_controller_)) {
+        ros_remote->initialize(&data_);
+    }
+    
+    return 0;
 }
 
 /**
@@ -189,6 +205,9 @@ int RobotControl::update_data()
 
     // Get user remote control command
     remote_controller_->get_command(data_.remote_command);
+    
+    // 发布机器人状态数据
+    state_publisher_->publish_state();
 
     return 0;
 }

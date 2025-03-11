@@ -30,6 +30,12 @@ RosRemoteControl::~RosRemoteControl()
 {
 }
 
+void RosRemoteControl::initialize(RobotData *robot_data)
+{
+    robot_data_ = robot_data;
+    subscribers_.emplace_back(node_.subscribe("set_joints", 5, &RosRemoteControl::on_set_joints_callback, this));
+}
+
 void RosRemoteControl::on_set_mode_callback(const std_msgs::Int32MultiArray::ConstPtr &msg)
 {
     std::cout << "[RosRemoteControl] set mode ";
@@ -72,5 +78,41 @@ void RosRemoteControl::on_set_velocity_callback(const std_msgs::Float32MultiArra
             }
         }
     }
+    cmd_mutex_.unlock();
+}
+
+void RosRemoteControl::on_set_joints_callback(const std_msgs::Float32MultiArray::ConstPtr &msg)
+{
+    if (robot_data_ == nullptr || cmd_.mode[0] != 3) {
+        // 只在强化学习模式下接收关节命令
+        return;
+    }
+    
+    std::cout << "[RosRemoteControl] set joints" << std::endl;
+    
+    const int size = msg->data.size();
+    if (size != robot_data_->robot_command.joints.size()) {
+        ROS_ERROR("[RosRemoteControl] Received joint command with wrong size (%d vs %zu)", 
+                size, robot_data_->robot_command.joints.size());
+        return;
+    }
+    
+    for (int i = 0; i < size; i++) {
+        robot_data_->robot_command.joints[i].pos = msg->data[i];
+        robot_data_->robot_command.joints[i].vel = 0.0f;
+        robot_data_->robot_command.joints[i].tau = 0.0f;
+        
+        // 默认的kp和kd值
+        if (robot_data_->robot_command.joints[i].kp == 0.0f) {
+            robot_data_->robot_command.joints[i].kp = 50.0f;
+        }
+        if (robot_data_->robot_command.joints[i].kd == 0.0f) {
+            robot_data_->robot_command.joints[i].kd = 1.0f;
+        }
+    }
+    
+    // 设置第二个模式为1，表示使用上位机发送的关节命令
+    cmd_mutex_.lock();
+    cmd_.mode[1] = 1;
     cmd_mutex_.unlock();
 }
