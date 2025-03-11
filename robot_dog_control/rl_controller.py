@@ -10,8 +10,13 @@ import os
 
 class RobotDogRLController:
     def __init__(self, model_path):
-        rospy.init_node('robot_dog_rl_controller', anonymous=True)
+        # 设置ROS网络环境变量，连接到机器狗下位机
+        os.environ['ROS_MASTER_URI'] = 'http://10.10.10.10:11311'
+        # 设置本机IP (请根据实际情况修改)
+        # os.environ['ROS_IP'] = '192.168.1.100'  # 取消注释并修改为您的计算机IP
         
+        rospy.init_node('robot_dog_rl_controller', anonymous=True)
+
         # 加载PyTorch模型
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = torch.load(model_path, map_location=self.device)

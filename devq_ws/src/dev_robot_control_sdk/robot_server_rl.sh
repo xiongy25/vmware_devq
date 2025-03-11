@@ -1,203 +1,203 @@
 #!/bin/bash
 
-# 机器狗下位机RL模式服务脚本
-# 用途：启动下位机控制程序并接收上位机强化学习模型的控制命令
+# Robot Dog Lower Control RL Mode Service Script
+# Purpose: Start the lower control program and receive control commands from the upper reinforcement learning model
 
-# 设置错误时退出
+# Exit on error
 set -e
 
-# 获取脚本所在目录的绝对路径
+# Get the absolute path of the script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-WORKSPACE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"  # 自动获取工作空间路径
+WORKSPACE_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"  # Automatically get workspace path
 
-# 定义清理函数
+# Define cleanup function
 cleanup() {
-    echo "正在关闭所有运行中的机器人控制程序..."
-    pkill -f "robot_control" || echo "未发现正在运行的机器人控制程序"
+    echo "Shutting down all running robot control programs..."
+    pkill -f "robot_control" || echo "No running robot control programs found"
     exit 0
 }
 
-# 捕获 SIGINT 信号
+# Capture SIGINT signal
 trap cleanup SIGINT
 
-# 检查ROS环境
+# Check ROS environment
 if [ -z "$ROS_DISTRO" ]; then
     if [ -f "/opt/ros/noetic/setup.bash" ]; then
         source /opt/ros/noetic/setup.bash
     else
-        echo "错误：找不到ROS环境配置文件 (/opt/ros/noetic/setup.bash)"
+        echo "Error: ROS environment configuration file not found (/opt/ros/noetic/setup.bash)"
         exit 1
     fi
 fi
 
-# 检查工作空间
+# Check workspace
 if [ ! -d "${WORKSPACE_DIR}" ]; then
-    echo "错误：工作空间目录不存在，请修改脚本中的WORKSPACE_DIR变量"
+    echo "Error: Workspace directory does not exist, please modify the WORKSPACE_DIR variable in the script"
     exit 1
 fi
 
-# 检查工作空间是否需要编译
+# Check if workspace needs compilation
 if [ ! -d "${WORKSPACE_DIR}/build" ] || [ ! -d "${WORKSPACE_DIR}/install" ]; then
-    echo "检测到工作空间未编译，开始编译..."
+    echo "Detected workspace not compiled, starting compilation..."
     
-    # 保存当前目录
+    # Save current directory
     CURRENT_DIR=$(pwd)
     
-    # 切换到工作空间目录
+    # Switch to workspace directory
     cd "${WORKSPACE_DIR}"
     
-    # 执行编译
+    # Execute compilation
     if ! catkin_make; then
-        echo "错误：工作空间编译失败"
+        echo "Error: Workspace compilation failed"
         cd "${CURRENT_DIR}"
         exit 1
     fi
     
-    echo "工作空间编译成功"
+    echo "Workspace compilation successful"
     
-    # 返回原目录
+    # Return to original directory
     cd "${CURRENT_DIR}"
 fi
 
-# 设置工作空间环境
+# Set workspace environment
 if [ -f "${WORKSPACE_DIR}/devel/setup.bash" ]; then
     source "${WORKSPACE_DIR}/devel/setup.bash"
 else
-    echo "错误：找不到工作空间的setup.bash文件，编译可能不完整"
+    echo "Error: Cannot find workspace setup.bash file, compilation may be incomplete"
     exit 1
 fi
 
-# 检查并进入控制程序目录
+# Check and enter control program directory
 CONTROL_DIR="${WORKSPACE_DIR}/devel/lib/robot_control"
 if [ ! -d "${CONTROL_DIR}" ]; then
-    echo "警告：找不到devel目录下的控制程序目录 (${CONTROL_DIR})"
-    # 尝试在其他可能的位置查找
+    echo "Warning: Cannot find control program directory in devel directory (${CONTROL_DIR})"
+    # Try to find in other possible locations
     CONTROL_DIR="${WORKSPACE_DIR}/install/lib/robot_control"
     if [ ! -d "${CONTROL_DIR}" ]; then
-        # 尝试直接在源码目录查找
+        # Try to find directly in source directory
         CONTROL_DIR="${WORKSPACE_DIR}/src/dev_robot_control_sdk"
         if [ ! -d "${CONTROL_DIR}" ]; then
-            echo "错误：无法找到控制程序目录"
+            echo "Error: Cannot find control program directory"
             exit 1
         fi
     fi
 fi
-echo "使用控制程序目录: ${CONTROL_DIR}"
+echo "Using control program directory: ${CONTROL_DIR}"
 cd "${CONTROL_DIR}"
 
-# 设置库路径
+# Set library path
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib:./
 
-# 检查配置文件
+# Check configuration file
 if [ ! -f "config/devq.yaml" ]; then
-    echo "警告：当前目录下找不到配置文件 (config/devq.yaml)"
-    # 尝试在其他可能的位置查找
+    echo "Warning: Configuration file not found in current directory (config/devq.yaml)"
+    # Try to find in other possible locations
     if [ -f "${WORKSPACE_DIR}/src/dev_robot_control_sdk/config/devq.yaml" ]; then
-        echo "在源码目录找到配置文件，复制到当前目录"
+        echo "Found configuration file in source directory, copying to current directory"
         mkdir -p config
         cp "${WORKSPACE_DIR}/src/dev_robot_control_sdk/config/devq.yaml" config/
     else
-        echo "错误：找不到配置文件 (config/devq.yaml)"
+        echo "Error: Cannot find configuration file (config/devq.yaml)"
         exit 1
     fi
 fi
 
-# 检查模型目录
+# Check model directory
 if [ ! -d "model/devq" ] || [ ! -f "model/devq/policy.mnn" ]; then
-    echo "警告：当前目录下找不到模型文件 (model/devq/policy.mnn)"
+    echo "Warning: Model file not found in current directory (model/devq/policy.mnn)"
     
-    # 检查单数model目录
+    # Check singular model directory
     if [ -f "${WORKSPACE_DIR}/src/dev_robot_control_sdk/model/devq/policy.mnn" ]; then
-        echo "在源码目录找到模型文件，复制到当前目录"
+        echo "Found model file in source directory, copying to current directory"
         mkdir -p model/devq
         cp "${WORKSPACE_DIR}/src/dev_robot_control_sdk/model/devq/policy.mnn" model/devq/
-    # 检查复数models目录（可能是命名不一致）
+    # Check plural models directory (might be inconsistent naming)
     elif [ -f "${WORKSPACE_DIR}/src/dev_robot_control_sdk/models/devq/policy.mnn" ]; then
-        echo "在源码目录的models目录找到模型文件，复制到当前目录"
+        echo "Found model file in models directory, copying to current directory"
         mkdir -p model/devq
         cp "${WORKSPACE_DIR}/src/dev_robot_control_sdk/models/devq/policy.mnn" model/devq/
     else
-        echo "错误：找不到模型文件 (model/devq/policy.mnn)"
-        echo "请确保源码目录中存在model/devq/policy.mnn或models/devq/policy.mnn文件"
+        echo "Error: Cannot find model file (model/devq/policy.mnn)"
+        echo "Please ensure source directory contains model/devq/policy.mnn or models/devq/policy.mnn file"
         exit 1
     fi
 fi
 
-# 检查可执行文件
+# Check executable file
 if [ ! -f "./robot_control" ]; then
-    echo "警告：当前目录下找不到控制程序可执行文件 (robot_control)"
-    # 尝试在devel目录查找
+    echo "Warning: Control program executable not found in current directory (robot_control)"
+    # Try to find in devel directory
     if [ -f "${WORKSPACE_DIR}/devel/lib/robot_control/robot_control" ]; then
-        echo "在devel目录找到可执行文件，使用该文件"
+        echo "Found executable in devel directory, using that file"
         ROBOT_EXEC="${WORKSPACE_DIR}/devel/lib/robot_control/robot_control"
     else
-        echo "错误：找不到控制程序可执行文件"
+        echo "Error: Cannot find control program executable"
         exit 1
     fi
 else
     ROBOT_EXEC="./robot_control"
 fi
 
-# 设置ROS网络环境变量 - 确保下位机能与上位机通信
-# 下位机IP (通常是10.10.10.10)
+# Set ROS network environment variables - Ensure lower control can communicate with upper control
+# Lower control IP (usually 10.10.10.10)
 export ROS_IP=10.10.10.10
 export ROS_MASTER_URI=http://10.10.10.10:11311
 
-# 检查是否已经有实例在运行
+# Check if instance is already running
 if pgrep -f "robot_control" > /dev/null; then
-    echo "警告：发现已有机器人控制程序在运行"
-    # 获取现有进程的PID
+    echo "Warning: Robot control program already running"
+    # Get existing process PID
     CONTROL_PID=$(pgrep -f "robot_control" | head -1)
-    echo "使用现有的控制程序 (PID: ${CONTROL_PID})"
+    echo "Using existing control program (PID: ${CONTROL_PID})"
 else
-    # 启动机器人控制程序 - 使用远程控制模式
-    echo "启动机器人控制程序（远程控制模式）..."
-    # 添加远程控制模式参数 - 适用于强化学习模型控制
+    # Start robot control program - Remote control mode
+    echo "Starting robot control program (Remote control mode)..."
+    # Add remote control mode parameters - For reinforcement learning model control
     ${ROBOT_EXEC} config/devq.yaml --remote_mode=true &
     CONTROL_PID=$!
-    echo "已启动机器人控制程序 (PID: ${CONTROL_PID})"
+    echo "Robot control program started (PID: ${CONTROL_PID})"
     
-    # 等待几秒钟确保控制程序完全启动
-    echo "等待控制程序启动..."
+    # Wait a few seconds to ensure control program is fully started
+    echo "Waiting for control program to start..."
     sleep 5
     
-    # 检查进程是否仍在运行
+    # Check if process is still running
     if ! ps -p ${CONTROL_PID} > /dev/null 2>&1; then
-        echo "错误：控制程序启动失败或已崩溃"
-        echo "请检查日志以获取更多信息"
+        echo "Error: Control program failed to start or has crashed"
+        echo "Please check logs for more information"
         exit 1
     fi
 fi
 
-# 检查ROS主节点是否运行
+# Check if ROS master node is running
 if ! rostopic list > /dev/null 2>&1; then
-    echo "错误：ROS主节点未运行"
-    echo "尝试启动ROS主节点..."
+    echo "Error: ROS master node not running"
+    echo "Attempting to start ROS master node..."
     roscore &
     sleep 3
 fi
 
-# 设置RL远程控制模式
-echo "设置远程控制模式为RL模式..."
-# 发送模式切换命令 - 假设已有一个set_remote_mode话题
-rostopic pub -1 /robot_control/set_mode std_msgs/Int32MultiArray "data: [1, 1]" || echo "警告：无法设置远程控制模式，可能需要人工设置"
+# Set RL remote control mode
+echo "Setting remote control mode to RL mode..."
+# Send mode switch command - Assuming there is a set_remote_mode topic
+rostopic pub -1 /robot_control/set_mode std_msgs/Int32MultiArray "data: [1, 1]" || echo "Warning: Unable to set remote control mode, manual setting may be required"
 
 echo ""
 echo "============================================="
-echo "机器狗下位机RL控制模式已启动"
-echo "已配置为接收上位机强化学习模型的控制命令"
-echo "支持的话题："
-echo "- 状态发布: /robot/state"
-echo "- 命令接收: /robot/command"
+echo "Robot Dog Lower Control RL Mode Started"
+echo "Configured to receive control commands from upper reinforcement learning model"
+echo "Supported topics:"
+echo "- Status publish: /robot/state"
+echo "- Command receive: /robot/command"
 echo "============================================="
-echo "按 Ctrl+C 可以停止服务并退出"
+echo "Press Ctrl+C to stop service and exit"
 echo ""
 
-# 显示一些有用的调试信息
-echo "已注册的ROS话题:"
+# Display some useful debug information
+echo "Registered ROS topics:"
 rostopic list
 
-# 无限循环，保持脚本运行，直到用户按Ctrl+C
+# Infinite loop, keep script running until user presses Ctrl+C
 while true; do
     sleep 1
 done

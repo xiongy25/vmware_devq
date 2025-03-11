@@ -150,6 +150,27 @@ ping 10.10.10.10
 
 ### 上位机IP地址设置方法
 
+#### 如何查看上位机IP地址
+
+在设置ROS网络环境变量前，您需要先查看上位机的IP地址。在Ubuntu终端中，可以使用以下任一命令查看：
+
+```bash
+# 方法1：使用ip命令
+ip addr
+
+# 方法2：使用ifconfig命令(如果未安装，使用 sudo apt install net-tools 安装)
+ifconfig
+```
+
+在命令输出中，找到与机器狗在同一网段的IP地址（通常是10.10.10.x）。例如：
+```
+2: ens33: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
+    link/ether 00:0c:29:d5:b7:bf brd ff:ff:ff:ff:ff:ff
+    altname enp2s1
+    inet 10.10.10.97/24 brd 10.10.10.255 scope global dynamic noprefixroute ens33
+```
+在这个例子中，上位机IP地址是 **10.10.10.97**。
+
 上位机（虚拟机）的IP地址需要设置在与机器狗相同的网段内（10.10.10.x），以下是三种设置方法：
 
 #### 方法一：在虚拟机中设置静态IP

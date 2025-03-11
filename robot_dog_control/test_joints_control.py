@@ -9,9 +9,16 @@
 import rospy
 import numpy as np
 import time
+import os
 from std_msgs.msg import Float32MultiArray, Int32MultiArray
 
 def main():
+    # 设置ROS网络环境变量，连接到机器狗下位机
+    os.environ['ROS_MASTER_URI'] = 'http://10.10.10.10:11311'
+    # 设置本机IP (请设置为您虚拟机的实际IP地址)
+    os.environ['ROS_IP'] = '10.10.10.20'  # 替换为您虚拟机的实际IP
+
+
     # 初始化ROS节点
     rospy.init_node('joint_control_test', anonymous=True)
     
