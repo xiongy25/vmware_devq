@@ -13,6 +13,7 @@ cp -r /mnt/example_ws/ .
 sudo umount /mnt
 
 ssh root@10.10.10.10
+weilan.com
 
 sudo reboot
 
