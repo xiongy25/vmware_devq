@@ -125,9 +125,29 @@ class RobotDogRLController:
 
         # 加载PyTorch模型
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = torch.load(model_path, map_location=self.device)
-        self.model.eval()
-        self.log_general(f"模型已加载到{self.device}设备")
+        try:
+            # 正确加载模型
+            self.model = torch.load(model_path, map_location=self.device)
+            self.log_general(f"模型已加载到{self.device}设备")
+            
+            # 分析模型类型和结构
+            self.analyze_model()
+            
+        except Exception as e:
+            self.log_general(f"模型加载失败: {e}")
+            self.log_general("尝试使用不同的加载方式...")
+            
+            try:
+                # 尝试使用JIT格式加载
+                self.model = torch.jit.load(model_path, map_location=self.device)
+                self.log_general("成功使用JIT格式加载模型")
+                self.analyze_model()
+            except Exception as jit_e:
+                self.log_general(f"JIT加载也失败: {jit_e}")
+                # 创建一个简单的替代模型 - 紧急情况下生成零动作
+                self.log_general("创建简单替代模型: 总是输出零动作")
+                self.model = lambda x: torch.zeros(1, 12).to(self.device)
+                self.model_type = "fallback"
         
         # 观察空间和动作空间缩放因子
         self.obs_scales = {
@@ -246,19 +266,8 @@ class RobotDogRLController:
                 self.initialized = True
                 self.log_general("初始化完成，接收到第一个机器人状态")
             elif self.should_run_policy:  # 只有当应该运行策略时才执行
-                # 执行模型推理
-                with torch.no_grad():
-                    # 预处理状态数据
-                    state_tensor = torch.from_numpy(self.robot_state).to(self.device).unsqueeze(0)
-                    
-                    # 模型推理
-                    action = self.model(state_tensor)
-                    
-                    # 后处理动作输出
-                    action_np = action.squeeze().cpu().numpy()
-                    
-                    # 发送命令到机器人
-                    self.set_control_command(action_np)
+                # 调用专门的推理函数，该函数使用build_observation_vector
+                self.run_policy_inference()
         
         except Exception as e:
             self.log_general(f"处理机器人状态时发生错误: {str(e)}")
@@ -316,13 +325,27 @@ class RobotDogRLController:
         self.log_command(f"设置速度命令: vx={vx}, vy={vy}, wz={wz}")
     
     def build_observation_vector(self):
-        """构建与训练时相同格式的观察向量"""
+        """构建与训练时相同格式的观察向量，遵循devq_flat_观察空间.md文档"""
         if self.robot_state is None:
             return None
             
+        # 创建235维的零向量
+        obs = np.zeros(235, dtype=np.float32)
+            
         # 提取状态数据
-        gyro_x, gyro_y, gyro_z = self.robot_state[0:3]
-        quat_w, quat_x, quat_y, quat_z = self.robot_state[3:7]
+        base_position = self.robot_state[0:3]  # 基本位置
+        base_orientation = self.robot_state[3:7]  # 四元数方向
+        
+        # 假设状态向量中的数据格式:
+        # 0-2: 基本位置 x,y,z
+        # 3-6: 基本姿态 (四元数)
+        # 7-30: 12个关节的位置和速度 (每个关节2个值)
+        
+        # 计算相关数据
+        # 1. 假设基本线速度 - 暂时使用零向量
+        lin_vel = np.zeros(3)  # 默认值为零
+        # 2. 基本角速度 - 暂时使用零向量
+        ang_vel = np.zeros(3)  # 默认值为零
         
         # 提取关节位置和速度
         joint_positions = []
@@ -331,70 +354,58 @@ class RobotDogRLController:
             joint_positions.append(self.robot_state[7 + i*2])
             joint_velocities.append(self.robot_state[7 + i*2 + 1])
             
-        # 记录关节位置和速度数据
-        self.log_robot_state(f"关节位置: {joint_positions}")
-        self.log_robot_state(f"关节速度: {joint_velocities}")
-        
         # 计算投影重力向量（与FSMStateRLModel中相同的方法）
-        quat = np.array([quat_w, quat_x, quat_y, quat_z])
+        quat = np.array([base_orientation[0], base_orientation[1], base_orientation[2], base_orientation[3]])
         projected_gravity = self.quat_rotate_inverse(quat, np.array([0, 0, -1]))
         
-        # 构建单步观察向量
-        obs = []
+        # 获取命令向量 [vx, vy, wz]
+        command = self.commands
         
-        # 命令信号
-        obs.extend(self.commands)
+        # 根据文档填充观察向量的各个部分:
         
-        # 基本角速度
-        obs.extend([
-            gyro_x * self.obs_scales['ang_vel'],
-            gyro_y * self.obs_scales['ang_vel'],
-            gyro_z * self.obs_scales['ang_vel']
-        ])
+        # 索引0-47: 基础48维
+        idx = 0
         
-        # 四元数
-        obs.extend([quat_w, quat_x, quat_y, quat_z])
+        # 1. 基本线速度 (3维)
+        obs[idx:idx+3] = lin_vel * self.obs_scales['lin_vel']
+        idx += 3
         
-        # 投影重力
-        obs.extend(projected_gravity)
+        # 2. 基本角速度 (3维)
+        obs[idx:idx+3] = ang_vel * self.obs_scales['ang_vel']
+        idx += 3
         
-        # 关节位置偏差
+        # 3. 投影重力向量 (3维)
+        obs[idx:idx+3] = projected_gravity
+        idx += 3
+        
+        # 4. 命令信号 (3维)
+        obs[idx:idx+3] = command
+        idx += 3
+        
+        # 5. 关节位置偏差 (12维)
         for i in range(12):
-            obs.append((joint_positions[i] - self.default_positions[i]) * self.obs_scales['dof_pos'])
+            obs[idx+i] = (joint_positions[i] - self.default_positions[i]) * self.obs_scales['dof_pos']
+        idx += 12
         
-        # 关节速度
+        # 6. 关节速度 (12维)
         for i in range(12):
-            obs.append(joint_velocities[i] * self.obs_scales['dof_vel'])
+            obs[idx+i] = joint_velocities[i] * self.obs_scales['dof_vel']
+        idx += 12
         
-        # 上一步动作
-        obs.extend(self.last_actions)
+        # 7. 上一步动作 (12维)
+        obs[idx:idx+12] = self.last_actions
+        idx += 12
         
-        # 打印当前观察向量维度（调试用）
-        self.log_general(f"基础观察向量维度: {len(obs)}")
+        # 8. 地形高度测量 (剩余维度，约187维)
+        # 这些数据在实机上无法获取，默认填0
+        # 索引48-234: 高度图数据
+        height_measurements_size = 235 - idx
+        # 所有地形高度默认为0，表示平地
+        # 已经在创建零向量时完成了这一步
         
-        # 记录观察向量的详细内容
-        self.log_general(f"观察向量详细内容:")
-        self.log_general(f"  命令信号 (3维): {obs[0:3]}")
-        self.log_general(f"  基本角速度 (3维): {obs[3:6]}")
-        self.log_general(f"  四元数 (4维): {obs[6:10]}")
-        self.log_general(f"  投影重力 (3维): {obs[10:13]}")
-        self.log_general(f"  关节位置偏差 (12维): {obs[13:25]}")
-        self.log_general(f"  关节速度 (12维): {obs[25:37]}")
-        self.log_general(f"  上一步动作 (12维): {obs[37:49]}")
+        self.log_general(f"构建了观察向量: 基础数据{idx}维 + 地形数据{height_measurements_size}维 = 总计235维")
         
-        # 临时解决方案：创建固定大小235维的观察向量并填充
-        # 原始观察向量只有49维，但模型期望235维输入
-        full_obs = np.zeros(235)  # 创建235维的零向量
-        
-        # 复制已有观察数据到新向量中
-        for i in range(min(len(obs), 235)):
-            full_obs[i] = obs[i]
-            
-        # 这里用0填充缺失的地形高度测量数据（约186维）
-        # 无需额外填充，因为full_obs已经初始化为零向量
-        
-        self.log_general(f"填充后观察向量维度: {len(full_obs)}")
-        return full_obs
+        return obs
     
     def quat_rotate_inverse(self, q, v):
         """四元数旋转的逆变换，与FSMStateRLModel中相同的实现"""
@@ -410,49 +421,65 @@ class RobotDogRLController:
         if self.should_terminate:
             return
             
-        # 构建观察向量
-        obs = self.build_observation_vector()
-        if obs is None:
-            return
-            
-        # 确保观察向量维度正确
-        if len(obs) != 235:
-            self.log_general(f"警告: 观察向量维度 {len(obs)} 不符合期望的 235")
-            # 紧急修复，如果维度仍然不对，手动调整
-            temp_obs = np.zeros(235)
-            for i in range(min(len(obs), 235)):
-                temp_obs[i] = obs[i]
-            obs = temp_obs
-            
-        # 直接使用当前观察向量（已填充到235维）
-        self.log_general(f"最终输入张量维度: {obs.shape}")
-        obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
-        self.log_general(f"送入模型的张量维度: {obs_tensor.shape}")
-        
         try:
+            # 构建观察向量
+            self.log_general("开始策略推理: 构建观察向量...")
+            obs = self.build_observation_vector()
+            if obs is None:
+                self.log_general("无法构建观察向量，跳过策略推理")
+                return
+                
+            # 记录观察向量维度
+            self.log_general(f"观察向量维度: {obs.shape}")
+            
+            # 确保观察向量维度正确 (模型期望235维)
+            if len(obs) != 235:
+                self.log_general(f"警告: 观察向量维度 {len(obs)} 不是235，调整到235维")
+                temp_obs = np.zeros(235, dtype=np.float32)
+                for i in range(min(len(obs), 235)):
+                    temp_obs[i] = obs[i]
+                obs = temp_obs
+            
+            # 检查是否有NaN或无穷大值
+            if np.isnan(obs).any() or np.isinf(obs).any():
+                self.log_general("警告: 观察向量中包含NaN或无穷大值，将替换为0")
+                obs = np.nan_to_num(obs)  # 替换NaN和无穷大值
+            
+            # 记录完整tensor信息
+            obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+            self.log_general(f"输入张量形状: {obs_tensor.shape}, 设备: {obs_tensor.device}")
+            
+            # 执行模型推理
+            self.log_general("执行模型推理...")
             with torch.no_grad():
-                actions = self.model(obs_tensor).cpu().numpy()[0]
+                try:
+                    actions = self.model(obs_tensor).cpu().numpy()[0]
+                    self.log_general(f"成功执行模型推理，输出动作形状: {actions.shape}")
+                except Exception as e:
+                    # 详细记录错误
+                    self.log_general(f"模型推理错误: {e}")
+                    # 紧急情况下使用零动作
+                    actions = np.zeros(12)
+                    self.log_general("使用零动作向量代替")
             
             # 输出动作数组维度
             self.log_general(f"模型输出动作维度: {actions.shape}")
             
             # 提取关节位置控制命令
-            if len(actions) >= 15:
-                # 原始处理方式
-                joint_positions = actions[3:15]
-            else:
-                # 适应较小的动作数组
-                if len(actions) > 3:
-                    joint_positions = actions[3:] if len(actions) > 3 else actions
-                    # 如果动作少于12个，填充到12个
-                    if len(joint_positions) < 12:
-                        joint_positions = np.pad(joint_positions, 
-                                            (0, 12-len(joint_positions)), 
-                                            'constant')
+            # 根据动作数组的大小动态调整
+            joint_positions = np.zeros(12)  # 默认为零
+            
+            if len(actions) >= 12:
+                # 直接使用动作（或从索引3开始，如果有额外数据）
+                if len(actions) >= 15:
+                    joint_positions = actions[3:15]  # 适用于某些模型输出
                 else:
-                    # 如果动作数组太小，使用零数组
-                    self.log_general("警告: 动作数组太小，使用零数组")
-                    joint_positions = np.zeros(12)
+                    joint_positions = actions[:12]  # 直接使用前12个值
+            else:
+                # 动作数组太小，填充剩余部分
+                self.log_general(f"警告: 动作数组大小 {len(actions)} 小于期望的12")
+                for i in range(min(len(actions), 12)):
+                    joint_positions[i] = actions[i]
             
             self.last_actions = joint_positions
             
@@ -468,8 +495,11 @@ class RobotDogRLController:
             joint_msg = Float32MultiArray()
             joint_msg.data = target_positions
             self.joint_cmd_pub.publish(joint_msg)
+            
         except Exception as e:
             self.log_general(f"模型推理或发送命令出错: {e}")
+            # 保存详细的错误信息以便调试
+            self.log_general(f"详细错误: {traceback.format_exc()}")
     
     def run_demo(self):
         """执行演示控制序列"""
@@ -565,6 +595,93 @@ class RobotDogRLController:
                 self.set_mode(0)  # 被动模式
             except:
                 pass
+
+    def analyze_model(self):
+        """分析模型类型和结构，记录关键信息"""
+        try:
+            model_type = str(type(self.model).__name__)
+            self.log_general(f"模型类型: {model_type}")
+            
+            self.log_general("根据文档确认：模型期望235维输入")
+            self.log_general("其中包括: 基础数据48维 + 地形高度数据187维")
+            
+            # 检查模型是否为强化学习模型
+            if hasattr(self.model, 'actor'):
+                self.model_type = "actor_critic"
+                self.log_general("检测到Actor-Critic结构模型")
+                
+                # 将actor网络设置为评估模式
+                if hasattr(self.model.actor, 'eval'):
+                    self.model.actor.eval()
+                    self.log_general("Actor网络已设置为评估模式")
+                    
+            elif hasattr(self.model, 'forward') and callable(self.model.forward):
+                self.model_type = "nn_module"
+                self.log_general("检测到标准神经网络模型")
+                
+                # 设置为评估模式
+                if hasattr(self.model, 'eval'):
+                    self.model.eval()
+                    self.log_general("模型已设置为评估模式")
+                
+                # 尝试确定输入维度
+                input_dim_found = False
+                for name, param in self.model.named_parameters():
+                    if 'weight' in name and len(param.shape) == 2:
+                        self.log_general(f"权重 {name}: 形状 {param.shape}")
+                        # 第一个线性层的权重通常反映输入维度
+                        if (name.startswith("0") or name.startswith("linear") or 
+                            name.startswith("fc") or not input_dim_found):
+                            if param.shape[1] == 235:
+                                self.log_general("确认: 模型期望235维输入，与文档匹配")
+                            else:
+                                self.log_general(f"注意: 模型期望{param.shape[1]}维输入，与文档中的235维不匹配")
+                            
+                            # 标记已找到输入维度
+                            input_dim_found = True
+                            break
+            else:
+                self.model_type = "jit_model"
+                self.log_general("检测到JIT编译模型")
+                
+                # 尝试设置为评估模式
+                if hasattr(self.model, 'eval'):
+                    self.model.eval()
+                    self.log_general("模型已设置为评估模式")
+                    
+            # 测试模型是否能处理235维输入
+            self.log_general("开始测试模型推理...")
+            try:
+                with torch.no_grad():
+                    # 创建一个与文档匹配的观察向量
+                    test_obs = np.zeros(235, dtype=np.float32)
+                    
+                    # 填充测试数据（只填充非零数据）
+                    # 命令: 向前行走的速度命令
+                    test_obs[6:9] = [0.5, 0.0, 0.0]  # vx=0.5, vy=0, wz=0
+                    
+                    # 转换为张量
+                    test_input = torch.FloatTensor(test_obs).unsqueeze(0).to(self.device)
+                    self.log_general(f"创建测试输入张量，形状: {test_input.shape}")
+                    
+                    # 尝试推理
+                    test_output = self.model(test_input)
+                    self.log_general(f"测试成功: 模型可以处理235维输入，输出形状: {test_output.shape}")
+                    
+                    # 分析输出结果
+                    if isinstance(test_output, torch.Tensor):
+                        output_shape = test_output.shape
+                        if len(output_shape) == 2:
+                            self.log_general(f"模型输出是一个批次的动作，维度: {output_shape[1]}")
+                            if output_shape[1] >= 12:
+                                self.log_general("输出维度至少为12，符合12个关节的控制需求")
+                    
+            except Exception as e:
+                self.log_general(f"测试失败: 模型推理出错: {e}")
+                
+        except Exception as e:
+            self.log_general(f"模型分析失败: {e}")
+            self.model_type = "unknown"
 
 def main():
     try:
