@@ -417,89 +417,86 @@ class RobotDogRLController:
         return a - b + c
     
     def run_policy_inference(self):
-        """运行策略模型推理并发送控制命令"""
-        if self.should_terminate:
+        """执行策略推理，生成动作并发送给机器人"""
+        if self.robot_state is None:
             return
             
-        try:
-            # 构建观察向量
-            self.log_general("开始策略推理: 构建观察向量...")
-            obs = self.build_observation_vector()
-            if obs is None:
-                self.log_general("无法构建观察向量，跳过策略推理")
-                return
-                
-            # 记录观察向量维度
-            self.log_general(f"观察向量维度: {obs.shape}")
+        # 构建观察向量
+        obs = self.build_observation_vector()
+        if obs is None:
+            return
             
-            # 确保观察向量维度正确 (模型期望235维)
-            if len(obs) != 235:
-                self.log_general(f"警告: 观察向量维度 {len(obs)} 不是235，调整到235维")
-                temp_obs = np.zeros(235, dtype=np.float32)
-                for i in range(min(len(obs), 235)):
-                    temp_obs[i] = obs[i]
-                obs = temp_obs
+        # 转换为张量并移动到正确的设备
+        obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+        
+        # 执行模型推理
+        with torch.no_grad():
+            actions = self.model(obs_tensor).cpu().numpy().squeeze()
             
-            # 检查是否有NaN或无穷大值
-            if np.isnan(obs).any() or np.isinf(obs).any():
-                self.log_general("警告: 观察向量中包含NaN或无穷大值，将替换为0")
-                obs = np.nan_to_num(obs)  # 替换NaN和无穷大值
+        # 训练时的关节顺序（URDF）：
+        # 右前腿: 0,1,2 (髋关节,大腿关节,小腿关节)
+        # 左前腿: 3,4,5 (髋关节,大腿关节,小腿关节)
+        # 右后腿: 6,7,8 (髋关节,大腿关节,小腿关节)
+        # 左后腿: 9,10,11 (髋关节,大腿关节,小腿关节)
+        
+        # 机器人底层的关节映射（devq.yaml）：
+        # output_dof_mapping: [ 1, 5, 9, 0, 4, 8, 3, 7, 11, 2, 6, 10 ]
+        
+        # 创建映射关系
+        urdf_to_robot = {
+            0: 1,   # 右前髋关节 -> 机器人索引1
+            1: 5,   # 右前大腿关节 -> 机器人索引5
+            2: 9,   # 右前小腿关节 -> 机器人索引9
+            3: 0,   # 左前髋关节 -> 机器人索引0
+            4: 4,   # 左前大腿关节 -> 机器人索引4
+            5: 8,   # 左前小腿关节 -> 机器人索引8
+            6: 3,   # 右后髋关节 -> 机器人索引3
+            7: 7,   # 右后大腿关节 -> 机器人索引7
+            8: 11,  # 右后小腿关节 -> 机器人索引11
+            9: 2,   # 左后髋关节 -> 机器人索引2
+            10: 6,  # 左后大腿关节 -> 机器人索引6
+            11: 10  # 左后小腿关节 -> 机器人索引10
+        }
+        
+        # 将训练时的动作映射到机器人底层关节顺序
+        robot_actions = np.zeros(12)
+        for urdf_idx, robot_idx in urdf_to_robot.items():
+            robot_actions[robot_idx] = actions[urdf_idx]
             
-            # 记录完整tensor信息
-            obs_tensor = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
-            self.log_general(f"输入张量形状: {obs_tensor.shape}, 设备: {obs_tensor.device}")
-            
-            # 执行模型推理
-            self.log_general("执行模型推理...")
-            with torch.no_grad():
-                try:
-                    actions = self.model(obs_tensor).cpu().numpy()[0]
-                    self.log_general(f"成功执行模型推理，输出动作形状: {actions.shape}")
-                except Exception as e:
-                    # 详细记录错误
-                    self.log_general(f"模型推理错误: {e}")
-                    # 紧急情况下使用零动作
-                    actions = np.zeros(12)
-                    self.log_general("使用零动作向量代替")
-            
-            # 输出动作数组维度
-            self.log_general(f"模型输出动作维度: {actions.shape}")
-            
-            # 提取关节位置控制命令
-            # 根据动作数组的大小动态调整
-            joint_positions = np.zeros(12)  # 默认为零
-            
-            if len(actions) >= 12:
-                # 直接使用动作（或从索引3开始，如果有额外数据）
-                if len(actions) >= 15:
-                    joint_positions = actions[3:15]  # 适用于某些模型输出
-                else:
-                    joint_positions = actions[:12]  # 直接使用前12个值
-            else:
-                # 动作数组太小，填充剩余部分
-                self.log_general(f"警告: 动作数组大小 {len(actions)} 小于期望的12")
-                for i in range(min(len(actions), 12)):
-                    joint_positions[i] = actions[i]
-            
-            self.last_actions = joint_positions
-            
-            # 计算目标关节位置
-            target_positions = []
-            for i in range(12):
-                target_positions.append(self.default_positions[i] + self.action_scale * joint_positions[i])
-            
-            # 记录目标关节位置
-            self.log_command(f"目标关节位置: {target_positions}")
-            
-            # 发送关节位置命令
-            joint_msg = Float32MultiArray()
-            joint_msg.data = target_positions
-            self.joint_cmd_pub.publish(joint_msg)
-            
-        except Exception as e:
-            self.log_general(f"模型推理或发送命令出错: {e}")
-            # 保存详细的错误信息以便调试
-            self.log_general(f"详细错误: {traceback.format_exc()}")
+        # 只保留四个小腿关节的动作
+        # 在机器人底层中，小腿关节的索引是：9,8,11,10
+        calf_actions = np.zeros(12)
+        calf_actions[9] = robot_actions[9]  # 右前小腿
+        calf_actions[8] = robot_actions[8]  # 左前小腿
+        calf_actions[11] = robot_actions[11]  # 右后小腿
+        calf_actions[10] = robot_actions[10]  # 左后小腿
+        
+        # 应用动作缩放
+        calf_actions = calf_actions * self.action_scale
+        
+        # 添加动作平滑
+        if hasattr(self, 'last_actions'):
+            calf_actions = 0.7 * calf_actions + 0.3 * self.last_actions
+        self.last_actions = calf_actions
+        
+        # 添加安全限制
+        calf_actions = np.clip(calf_actions, -0.3, 0.3)  # 限制小腿关节运动范围
+        
+        # 获取当前站立位置
+        standing_positions = np.array(self.robot_state[7:31:2])  # 提取所有关节位置
+        
+        # 将小腿动作叠加到站立位置上
+        target_positions = standing_positions.copy()
+        target_positions[9] += calf_actions[9]  # 右前小腿
+        target_positions[8] += calf_actions[8]  # 左前小腿
+        target_positions[11] += calf_actions[11]  # 右后小腿
+        target_positions[10] += calf_actions[10]  # 左后小腿
+        
+        # 记录目标位置
+        self.log_command(f"目标关节位置: {target_positions.tolist()}")
+        
+        # 发送关节位置命令
+        self.send_joint_positions(target_positions)
     
     def run_demo(self):
         """执行演示控制序列"""
@@ -682,6 +679,27 @@ class RobotDogRLController:
         except Exception as e:
             self.log_general(f"模型分析失败: {e}")
             self.model_type = "unknown"
+
+    def send_joint_positions(self, positions):
+        """发送关节位置命令到机器人
+        
+        Args:
+            positions: 12个关节的目标位置数组
+        """
+        try:
+            # 创建关节命令消息
+            joint_cmd_msg = Float32MultiArray()
+            joint_cmd_msg.data = positions.tolist()
+            
+            # 发布关节命令
+            self.joint_cmd_pub.publish(joint_cmd_msg)
+            
+            # 记录发送的命令
+            self.log_command(f"发送关节位置命令: {positions.tolist()}")
+            
+        except Exception as e:
+            self.log_general(f"发送关节位置命令时发生错误: {e}")
+            traceback.print_exc()
 
 def main():
     try:
